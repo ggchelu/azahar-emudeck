@@ -24,6 +24,14 @@ object PermissionsHandler {
             }
 
             val uri = citraDirectory
+            
+            // Handle file URIs from automatic setup
+            if (uri.scheme == "file") {
+                val file = java.io.File(uri.path ?: "")
+                return file.exists() && file.canWrite()
+            }
+            
+            // Handle content URIs from SAF
             val takeFlags =
                 Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             context.contentResolver.takePersistableUriPermission(uri, takeFlags)

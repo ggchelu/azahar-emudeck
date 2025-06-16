@@ -41,8 +41,10 @@ import org.citra.citra_emu.model.PageState
 import org.citra.citra_emu.model.SetupCallback
 import org.citra.citra_emu.model.SetupPage
 import org.citra.citra_emu.ui.main.MainActivity
+import org.citra.citra_emu.utils.AutomaticDirectoryHelper
 import org.citra.citra_emu.utils.CitraDirectoryHelper
 import org.citra.citra_emu.utils.GameHelper
+import org.citra.citra_emu.utils.Log
 import org.citra.citra_emu.utils.PermissionsHandler
 import org.citra.citra_emu.utils.ViewUtils
 import org.citra.citra_emu.viewmodel.GamesViewModel
@@ -249,13 +251,21 @@ class SetupFragment : Fragment() {
                                 R.string.select_citra_user_folder_description,
                                 buttonAction = {
                                     pageButtonCallback = it
-                                    openCitraDirectory.launch(null)
+                                    attemptAutomaticDirectorySetup()
                                 },
                                 buttonState = {
                                     if (PermissionsHandler.hasWriteAccess(requireContext())) {
                                         ButtonState.BUTTON_ACTION_COMPLETE
                                     } else {
-                                        ButtonState.BUTTON_ACTION_INCOMPLETE
+                                        // Also check if our automatic directory setup has been completed
+                                        val azaharUri = PermissionsHandler.citraDirectory
+                                        if (azaharUri.toString().isNotEmpty() && 
+                                            azaharUri.scheme == "file" &&
+                                            java.io.File(azaharUri.path ?: "").exists()) {
+                                            ButtonState.BUTTON_ACTION_COMPLETE
+                                        } else {
+                                            ButtonState.BUTTON_ACTION_INCOMPLETE
+                                        }
                                     }
                                 },
                                 isUnskippable = true,
@@ -273,9 +283,7 @@ class SetupFragment : Fragment() {
                                 R.string.games_description,
                                 buttonAction =  {
                                     pageButtonCallback = it
-                                    getGamesDirectory.launch(
-                                        Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).data
-                                    )
+                                    attemptAutomaticGamesDirectorySetup()
                                 },
                                 buttonState = {
                                     if (preferences.getString(GameHelper.KEY_GAME_PATH, "")!!.isNotEmpty()) {
@@ -292,12 +300,20 @@ class SetupFragment : Fragment() {
                         )
                     },
                 ) {
-                    if (
-                        PermissionsHandler.hasWriteAccess(requireContext()) &&
+                    val hasValidDirectory = if (PermissionsHandler.hasWriteAccess(requireContext())) {
+                        true
+                    } else {
+                        // Also check if our automatic directory setup has been completed
+                        val azaharUri = PermissionsHandler.citraDirectory
+                        azaharUri.toString().isNotEmpty() && 
+                        azaharUri.scheme == "file" &&
+                        java.io.File(azaharUri.path ?: "").exists()
+                    }
+                    
+                    if (hasValidDirectory &&
                         preferences.getString(GameHelper.KEY_GAME_PATH, "")!!.isNotEmpty()
                     ) {
                         PageState.PAGE_STEPS_COMPLETE
-
                     } else {
                         PageState.PAGE_STEPS_INCOMPLETE
                     }
@@ -455,7 +471,8 @@ class SetupFragment : Fragment() {
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
             if (isGranted) {
-                checkForButtonState.invoke()
+                // Continue automatic setup after permission is granted
+                continueAutomaticDirectorySetup()
                 return@registerForActivityResult
             }
 
@@ -502,6 +519,119 @@ class SetupFragment : Fragment() {
 
             checkForButtonState.invoke()
         }
+
+    private fun attemptAutomaticDirectorySetup() {
+        try {
+            // Check if we have storage permission
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                if (requireContext().checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE) 
+                    != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                    // Request permission - will continue in permissionLauncher callback
+                    permissionLauncher.launch(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                    return
+                }
+            }
+            
+            // Permission granted, continue with setup
+            continueAutomaticDirectorySetup()
+        } catch (e: Exception) {
+            // Fall back to manual directory selection on any error
+            android.util.Log.e("SetupFragment", "Error during automatic setup: ${e.message}")
+            openCitraDirectory.launch(null)
+        }
+    }
+
+    private fun continueAutomaticDirectorySetup() {
+        try {
+            // Check if automatic setup is possible
+            if (!AutomaticDirectoryHelper.canCreateAutomatically(requireContext())) {
+                android.util.Log.w("SetupFragment", "Cannot create automatically, falling back to manual")
+                // Fall back to manual selection immediately
+                openCitraDirectory.launch(null)
+                return
+            }
+            
+            // Try automatic directory creation
+            val (success, azaharUri) = AutomaticDirectoryHelper.createAzaharDirectoryAutomatically(requireContext())
+            
+            if (success && azaharUri != null) {
+                // Set persistent URI permission (required for external storage access)
+                val takeFlags = Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION
+                try {
+                    requireActivity().contentResolver.takePersistableUriPermission(azaharUri, takeFlags)
+                } catch (e: Exception) {
+                    // This might fail for file:// URIs, but that's okay for external files dir
+                    android.util.Log.d("SetupFragment", "Could not take persistent permission (expected for file URIs): ${e.message}")
+                }
+                
+                // Initialize the directory in the system - this sets PermissionsHandler.citraDirectory
+                CitraDirectoryHelper.initializeCitraDirectory(azaharUri)
+                
+                // Set up home view model
+                homeViewModel.setUserDir(requireActivity(), azaharUri.path!!)
+                homeViewModel.setPickingUserDir(false)
+                
+                // Create Games subdirectory automatically
+                val gamesUri = AutomaticDirectoryHelper.createGamesDirectory(requireContext(), azaharUri)
+                if (gamesUri != null) {
+                    preferences.edit()
+                        .putString(GameHelper.KEY_GAME_PATH, gamesUri.toString())
+                        .apply()
+                    homeViewModel.setGamesDir(requireActivity(), gamesUri.path!!)
+                }
+                
+                // Mark setup as complete
+                checkForButtonState.invoke()
+                
+                // Show simple success message
+                android.widget.Toast.makeText(
+                    requireContext(),
+                    "Azahar setup complete! Folder created at: ${azaharUri.path}",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+                
+            } else {
+                android.util.Log.w("SetupFragment", "Automatic creation failed, falling back to manual")
+                // Fall back to manual directory selection
+                openCitraDirectory.launch(null)
+            }
+        } catch (e: Exception) {
+            // Fall back to manual directory selection on any error
+            android.util.Log.e("SetupFragment", "Error during automatic setup continuation: ${e.message}")
+            openCitraDirectory.launch(null)
+        }
+    }
+
+    private fun attemptAutomaticGamesDirectorySetup() {
+        try {
+            // Check if Azahar directory exists first
+            val azaharUri = PermissionsHandler.citraDirectory
+            if (azaharUri.toString().isEmpty()) {
+                // No Azahar directory set, show manual selection
+                getGamesDirectory.launch(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).data)
+                return
+            }
+            
+            // Create Games subdirectory automatically
+            val gamesUri = AutomaticDirectoryHelper.createGamesDirectory(requireContext(), azaharUri)
+            if (gamesUri != null) {
+                preferences.edit()
+                    .putString(GameHelper.KEY_GAME_PATH, gamesUri.toString())
+                    .apply()
+                
+                homeViewModel.setGamesDir(requireActivity(), gamesUri.path!!)
+                checkForButtonState.invoke()
+                
+            } else {
+                // Fall back to manual selection
+                getGamesDirectory.launch(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).data)
+            }
+        } catch (e: Exception) {
+            // Fall back to manual selection on any error
+            Log.error("[SetupFragment] Error during games directory setup: ${e.message}")
+            getGamesDirectory.launch(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).data)
+        }
+    }
 
     private fun finishSetup() {
         preferences.edit()
