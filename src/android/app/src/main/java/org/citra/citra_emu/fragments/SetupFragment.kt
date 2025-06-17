@@ -371,6 +371,11 @@ class SetupFragment : Fragment() {
                     ViewUtils.showView(binding.buttonNext)
                 }
 
+                // Check for storage permission when entering data folders page (index 2)
+                if (position == 2) {
+                    checkStoragePermissionForDataFolders()
+                }
+
                 previousPosition = position
             }
         })
@@ -471,8 +476,13 @@ class SetupFragment : Fragment() {
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
             if (isGranted) {
-                // Continue automatic setup after permission is granted
-                continueAutomaticDirectorySetup()
+                // Continue setup if this was a button-initiated permission request
+                if (::pageButtonCallback.isInitialized) {
+                    continueAutomaticDirectorySetup()
+                } else {
+                    // Just refresh button states for page-level permission requests
+                    checkForButtonState.invoke()
+                }
                 return@registerForActivityResult
             }
 
@@ -519,6 +529,16 @@ class SetupFragment : Fragment() {
 
             checkForButtonState.invoke()
         }
+
+    private fun checkStoragePermissionForDataFolders() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+            if (requireContext().checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                // Request permission for data folders page
+                permissionLauncher.launch(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
+            }
+        }
+    }
 
     private fun attemptAutomaticDirectorySetup() {
         try {
