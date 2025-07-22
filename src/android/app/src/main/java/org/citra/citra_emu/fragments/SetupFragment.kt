@@ -5,6 +5,7 @@
 package org.citra.citra_emu.fragments
 
 import android.Manifest
+import android.app.Activity
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
@@ -12,6 +13,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.provider.DocumentsContract
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -253,32 +255,24 @@ class SetupFragment : Fragment() {
                                 R.string.select_citra_user_folder_description,
                                 buttonAction = {
                                     pageButtonCallback = it
-                                    openCitraDirectory.launch(null)
+                                    // Pre-select Azahar directory if it exists
+                                    val azaharUri = getAzaharContentUri()
+                                    android.util.Log.d("SetupFragment", "Button clicked, azaharUri: $azaharUri")
+
+                                    val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+                                    azaharUri?.let { uri ->
+                                        android.util.Log.d("SetupFragment", "Setting EXTRA_INITIAL_URI to: $uri")
+                                        intent.putExtra(DocumentsContract.EXTRA_INITIAL_URI, uri)
+                                    }
+
+                                    android.util.Log.d("SetupFragment", "Launching intent: $intent")
+                                    openCitraDirectoryLauncher.launch(intent)
                                 },
                                 buttonState = {
                                     if (PermissionsHandler.hasWriteAccess(requireContext())) {
                                         ButtonState.BUTTON_ACTION_COMPLETE
                                     } else {
-                                        // Check if proper storage permission is granted
-                                        val hasStoragePermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                                            android.os.Environment.isExternalStorageManager()
-                                        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                                            ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
-                                        } else {
-                                            true
-                                        }
-
-                                        if (hasStoragePermission) {
-                                            // Check if Azahar directory was created automatically
-                                            val azaharDir = File(Environment.getExternalStorageDirectory(), "Azahar")
-                                            if (azaharDir.exists()) {
-                                                ButtonState.BUTTON_ACTION_COMPLETE
-                                            } else {
-                                                ButtonState.BUTTON_ACTION_INCOMPLETE
-                                            }
-                                        } else {
-                                            ButtonState.BUTTON_ACTION_INCOMPLETE
-                                        }
+                                        ButtonState.BUTTON_ACTION_INCOMPLETE
                                     }
                                 },
                                 isUnskippable = true,
@@ -292,19 +286,7 @@ class SetupFragment : Fragment() {
 
                     },
                 ) {
-                    // Check if proper storage permission is granted
-                    val hasStoragePermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                        android.os.Environment.isExternalStorageManager()
-                    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                        ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
-                    } else {
-                        true
-                    }
-
-                    val hasValidDirectory = PermissionsHandler.hasWriteAccess(requireContext()) ||
-                        (hasStoragePermission && File(Environment.getExternalStorageDirectory(), "Azahar").exists())
-
-                    if (hasValidDirectory) {
+                    if (PermissionsHandler.hasWriteAccess(requireContext())) {
                         PageState.PAGE_STEPS_COMPLETE
                     } else {
                         PageState.PAGE_STEPS_INCOMPLETE
@@ -487,8 +469,8 @@ class SetupFragment : Fragment() {
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
             if (isGranted) {
-                // Create Azahar directory when permission granted
-                createAzaharDirectory()
+                // Ensure Azahar directory exists when permission granted
+                ensureAzaharDirectoryExists()
                 return@registerForActivityResult
             }
 
@@ -504,14 +486,14 @@ class SetupFragment : Fragment() {
                 .show()
         }
 
-    private val openCitraDirectory = registerForActivityResult<Uri, Uri>(
-        ActivityResultContracts.OpenDocumentTree()
-    ) { result: Uri? ->
-        if (result == null) {
-            return@registerForActivityResult
+    private val openCitraDirectoryLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            result.data?.data?.let { uri ->
+                CitraDirectoryHelper(requireActivity(), true).showCitraDirectoryDialog(uri, pageButtonCallback, checkForButtonState)
+            }
         }
-
-        CitraDirectoryHelper(requireActivity(), true).showCitraDirectoryDialog(result, pageButtonCallback, checkForButtonState)
     }
 
     private val getGamesDirectory =
@@ -610,65 +592,64 @@ class SetupFragment : Fragment() {
                 return
             }
         }
-        // Permission granted, create directory
-        createAzaharDirectory()
+        // Permission granted, ensure directory exists for user convenience
+        ensureAzaharDirectoryExists()
     }
 
     private fun updateDataFoldersSetupState() {
-        // Check if proper storage permission is granted
-        val hasStoragePermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            Environment.isExternalStorageManager()
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
-        } else {
-            true
-        }
-
-        // Check if Azahar directory exists
-        val azaharDir = File(Environment.getExternalStorageDirectory(), "Azahar")
-        val hasValidDirectory = PermissionsHandler.hasWriteAccess(requireContext()) ||
-            (hasStoragePermission && azaharDir.exists())
-
-        isDataFoldersSetupComplete = hasValidDirectory
+        isDataFoldersSetupComplete = PermissionsHandler.hasWriteAccess(requireContext())
     }
 
-    private fun createAzaharDirectory() {
+    private fun ensureAzaharDirectoryExists() {
         try {
-            val externalStorageDir = Environment.getExternalStorageDirectory()
-            val azaharDir = File(externalStorageDir, "Azahar")
+            // Only create the directory for user convenience, don't set up preferences
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && Environment.isExternalStorageManager()) {
+                val externalStorageDir = Environment.getExternalStorageDirectory()
+                val azaharDir = File(externalStorageDir, "Azahar")
 
-            if (!azaharDir.exists()) {
-                val created = azaharDir.mkdirs()
-                if (!created) {
-                    android.util.Log.e("SetupFragment", "Failed to create Azahar directory")
-                    return
+                if (!azaharDir.exists()) {
+                    azaharDir.mkdirs()
                 }
             }
-
-            // Set the directory directly in preferences (avoid persistent permission issues on file:// URIs)
-            val azaharUri = Uri.fromFile(azaharDir)
-            PermissionsHandler.setCitraDirectory(azaharUri.toString())
-
-            // Set up home view model
-            homeViewModel.setUserDir(requireActivity(), azaharUri.path!!)
-            homeViewModel.setPickingUserDir(false)
-
-            // Create Games subdirectory
-            val gamesDir = File(azaharDir, "Games")
-            if (!gamesDir.exists()) {
-                gamesDir.mkdirs()
-            }
-
-            preferences.edit()
-                .putString(GameHelper.KEY_GAME_PATH, Uri.fromFile(gamesDir).toString())
-                .apply()
-            homeViewModel.setGamesDir(requireActivity(), gamesDir.absolutePath)
-
-            // Update setup state after successful creation
-            updateDataFoldersSetupState()
-
         } catch (e: Exception) {
             android.util.Log.e("SetupFragment", "Error creating Azahar directory: ${e.message}", e)
+        }
+    }
+
+    private fun getAzaharContentUri(): Uri? {
+        return try {
+            // Check if Azahar directory exists
+            val azaharDir = File(Environment.getExternalStorageDirectory(), "Azahar")
+            android.util.Log.d("SetupFragment", "Azahar directory exists: ${azaharDir.exists()}")
+            android.util.Log.d("SetupFragment", "Azahar directory path: ${azaharDir.absolutePath}")
+
+            if (azaharDir.exists()) {
+                // Try different approaches to create the content URI
+                val treeDocumentId = "primary:Azahar"
+
+                // Approach 1: Using buildTreeDocumentUri
+                val treeUri = DocumentsContract.buildTreeDocumentUri(
+                    "com.android.externalstorage.documents",
+                    treeDocumentId
+                )
+                android.util.Log.d("SetupFragment", "Generated tree URI: $treeUri")
+
+                // Approach 2: Using buildDocumentUri (for individual document)
+                val docUri = DocumentsContract.buildDocumentUri(
+                    "com.android.externalstorage.documents",
+                    treeDocumentId
+                )
+                android.util.Log.d("SetupFragment", "Generated document URI: $docUri")
+
+                // Return the document URI which should work better for EXTRA_INITIAL_URI
+                docUri
+            } else {
+                android.util.Log.d("SetupFragment", "Azahar directory does not exist")
+                null
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("SetupFragment", "Error creating Azahar content URI: ${e.message}", e)
+            null
         }
     }
 }
