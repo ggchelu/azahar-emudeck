@@ -604,9 +604,11 @@ class SetupFragment : Fragment() {
         try {
             // Only create the directory for user convenience, don't set up preferences
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && Environment.isExternalStorageManager()) {
-                val azaharDir = findOrCreateAzaharDirectory()
-                if (azaharDir != null) {
-                    android.util.Log.d("SetupFragment", "Azahar directory ensured at: ${azaharDir.absolutePath}")
+                val externalStorageDir = Environment.getExternalStorageDirectory()
+                val azaharDir = File(externalStorageDir, "Azahar")
+
+                if (!azaharDir.exists()) {
+                    azaharDir.mkdirs()
                 }
             }
         } catch (e: Exception) {
@@ -614,102 +616,37 @@ class SetupFragment : Fragment() {
         }
     }
 
-    private fun findOrCreateAzaharDirectory(): File? {
-        // Try to find existing Azahar directory in Emulation/storage structure
-        val existingDir = findAzaharDirectory()
-        if (existingDir != null) {
-            return existingDir
-        }
-
-        // Create new directory in Emulation/storage/Azahar on internal storage
-        val internalStorage = Environment.getExternalStorageDirectory()
-        val azaharDir = File(internalStorage, "Emulation/storage/Azahar")
-
-        if (!azaharDir.exists()) {
-            azaharDir.mkdirs()
-            android.util.Log.d("SetupFragment", "Created Azahar directory at: ${azaharDir.absolutePath}")
-        }
-
-        return if (azaharDir.exists()) azaharDir else null
-    }
-
-    private fun findAzaharDirectory(): File? {
-        // Check internal storage first: /storage/emulated/0/Emulation/storage/Azahar
-        val internalStorage = Environment.getExternalStorageDirectory()
-        val internalAzahar = File(internalStorage, "Emulation/storage/Azahar")
-        if (internalAzahar.exists()) {
-            android.util.Log.d("SetupFragment", "Found Azahar directory in internal storage: ${internalAzahar.absolutePath}")
-            return internalAzahar
-        }
-
-        // Check for SD card: /storage/{SD-CARD-ID}/Emulation/storage/Azahar
-        val externalStorageVolumes = requireContext().getExternalFilesDirs(null)
-        for (volume in externalStorageVolumes) {
-            if (volume != null && Environment.isExternalStorageRemovable(volume)) {
-                // Navigate up from app-specific directory to storage root
-                val volumeRoot = volume.path.substringBefore("/Android")
-                val sdCardAzahar = File(volumeRoot, "Emulation/storage/Azahar")
-                if (sdCardAzahar.exists()) {
-                    android.util.Log.d("SetupFragment", "Found Azahar directory in SD card: ${sdCardAzahar.absolutePath}")
-                    return sdCardAzahar
-                }
-            }
-        }
-
-        android.util.Log.d("SetupFragment", "No existing Azahar directory found")
-        return null
-    }
-
     private fun getAzaharContentUri(): Uri? {
         return try {
-            // Find existing Azahar directory or determine where it will be created
-            val azaharDir = findAzaharDirectory() ?: File(Environment.getExternalStorageDirectory(), "Emulation/storage/Azahar")
-
+            // Check if Azahar directory exists
+            val azaharDir = File(Environment.getExternalStorageDirectory(), "Azahar")
             android.util.Log.d("SetupFragment", "Azahar directory exists: ${azaharDir.exists()}")
             android.util.Log.d("SetupFragment", "Azahar directory path: ${azaharDir.absolutePath}")
 
-            if (!azaharDir.exists()) {
-                android.util.Log.d("SetupFragment", "Azahar directory does not exist yet")
-                return null
+            if (azaharDir.exists()) {
+                // Try different approaches to create the content URI
+                val treeDocumentId = "primary:Azahar"
+
+                // Approach 1: Using buildTreeDocumentUri
+                val treeUri = DocumentsContract.buildTreeDocumentUri(
+                    "com.android.externalstorage.documents",
+                    treeDocumentId
+                )
+                android.util.Log.d("SetupFragment", "Generated tree URI: $treeUri")
+
+                // Approach 2: Using buildDocumentUri (for individual document)
+                val docUri = DocumentsContract.buildDocumentUri(
+                    "com.android.externalstorage.documents",
+                    treeDocumentId
+                )
+                android.util.Log.d("SetupFragment", "Generated document URI: $docUri")
+
+                // Return the document URI which should work better for EXTRA_INITIAL_URI
+                docUri
+            } else {
+                android.util.Log.d("SetupFragment", "Azahar directory does not exist")
+                null
             }
-
-            // Determine if it's internal storage or SD card and build appropriate document ID
-            val absolutePath = azaharDir.absolutePath
-            val treeDocumentId = when {
-                // Internal storage: /storage/emulated/0/
-                absolutePath.startsWith("/storage/emulated/0/") -> {
-                    val relativePath = absolutePath.substringAfter("/storage/emulated/0/")
-                    "primary:$relativePath"
-                }
-                // SD card: /storage/{volume-id}/
-                absolutePath.startsWith("/storage/") -> {
-                    // Extract volume ID (e.g., "XXXX-XXXX" from "/storage/XXXX-XXXX/...")
-                    val pathParts = absolutePath.substring("/storage/".length).split("/")
-                    if (pathParts.size >= 2) {
-                        val volumeId = pathParts[0]
-                        val relativePath = pathParts.drop(1).joinToString("/")
-                        "$volumeId:$relativePath"
-                    } else {
-                        android.util.Log.e("SetupFragment", "Cannot parse SD card path: $absolutePath")
-                        return null
-                    }
-                }
-                else -> {
-                    android.util.Log.e("SetupFragment", "Unknown storage path format: $absolutePath")
-                    return null
-                }
-            }
-
-            android.util.Log.d("SetupFragment", "Tree document ID: $treeDocumentId")
-
-            // Build the document URI for EXTRA_INITIAL_URI
-            val docUri = DocumentsContract.buildDocumentUri(
-                "com.android.externalstorage.documents",
-                treeDocumentId
-            )
-            android.util.Log.d("SetupFragment", "Generated document URI: $docUri")
-
-            docUri
         } catch (e: Exception) {
             android.util.Log.e("SetupFragment", "Error creating Azahar content URI: ${e.message}", e)
             null
