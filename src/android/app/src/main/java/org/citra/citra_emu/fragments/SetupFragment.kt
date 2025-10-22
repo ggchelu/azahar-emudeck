@@ -605,9 +605,12 @@ class SetupFragment : Fragment() {
             // Only create the directory for user convenience, don't set up preferences
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && Environment.isExternalStorageManager()) {
                 val externalStorageDir = Environment.getExternalStorageDirectory()
-                val azaharDir = File(externalStorageDir, "Azahar")
+                val emulationDir = File(externalStorageDir, "Emulation")
+                val storageDir = File(emulationDir, "storage")
+                val azaharDir = File(storageDir, "Azahar")
 
                 if (!azaharDir.exists()) {
+                    // Create all parent directories if they don't exist
                     azaharDir.mkdirs()
                 }
             }
@@ -619,13 +622,16 @@ class SetupFragment : Fragment() {
     private fun getAzaharContentUri(): Uri? {
         return try {
             // Check if Azahar directory exists
-            val azaharDir = File(Environment.getExternalStorageDirectory(), "Azahar")
+            val externalStorageDir = Environment.getExternalStorageDirectory()
+            val emulationDir = File(externalStorageDir, "Emulation")
+            val storageDir = File(emulationDir, "storage")
+            val azaharDir = File(storageDir, "Azahar")
             android.util.Log.d("SetupFragment", "Azahar directory exists: ${azaharDir.exists()}")
             android.util.Log.d("SetupFragment", "Azahar directory path: ${azaharDir.absolutePath}")
 
             if (azaharDir.exists()) {
                 // Try different approaches to create the content URI
-                val treeDocumentId = "primary:Azahar"
+                val treeDocumentId = "primary:Emulation/storage/Azahar"
 
                 // Approach 1: Using buildTreeDocumentUri
                 val treeUri = DocumentsContract.buildTreeDocumentUri(
